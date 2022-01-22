@@ -1,0 +1,852 @@
+
+###############################################################################
+Lab 1: Use terraform to setup the docker server and jenkins server for CICD Lab
+###############################################################################
+
+# Launch Ubuntu 20.04 t2.micro EC2 machine.
+# Note: In the security group, open ports 22, 80, 8080 and 4243. 
+# Use the tag "CICDLab-yourname'
+
+Task 1: Install Terraform
+=========================
+# After the EC2 server is up & running, SSH into the machine and do the below:
+
+sudo hostnamectl set-hostname CICDLab
+exit 
+SSH into the machine again. New hostname will appear now
+
+sudo apt update
+sudo apt install wget unzip -y
+
+wget https://releases.hashicorp.com/terraform/1.1.4/terraform_1.1.4_linux_amd64.zip
+unzip terraform_1.1.4_linux_amd64.zip
+
+ls
+sudo mv terraform /usr/local/bin
+ls
+terraform -v
+rm terraform_1.1.4_linux_amd64.zip
+
+
+Task 2: Install AWS CLI and Ansible
+===================================
+sudo apt-get install python3-pip -y
+sudo pip3 install awscli boto boto3 ansible
+
+aws configure
+ # enter your access key id 
+ # enter your secret access key
+
+# If you need to create new credentials, Follow below steps
+Go to aws console. On top right corner, click on your name or aws profile id. 
+when the menu opens, click on Security Credentials
+Under AWS IAM Credntials, click on Create access key. If you already have 2 active keys, 
+you can deactivate and delete the older one so that you can create a new key
+
+Complete aws configure step
+
+# do smoke test to check if your credentials are valid
+aws s3 ls
+
+# Create hosts inventory file with the necessary permissions
+$ sudo mkdir /etc/ansible && sudo touch /etc/ansible/hosts
+$ sudo chmod 766 /etc/ansible/hosts
+
+
+Task 3: Use terraform to launch 2 servers. 
+==========================================
+# We need 2 additional servers docker-server and jenkins-server
+# For git-ws, we will use the anchor EC2 (from where we are operating now) 
+# You can use t2.micro for Docker/Jenkins
+
+# Create the terraform directory and set up the config files in it
+$ mkdir devops-labs && cd devops-labs
+
+# As a first step, create a key using ssh-keygen.
+$ ssh-keygen -t rsa -b 2048 
+
+# This will create id_rsa and id_rsa.pub in /home/ubuntu/.ssh/
+# Keep the path as /home/ubuntu/.ssh/id_rsa; don't set up any passphrase
+# Basically just hit 'Enter' key for the 3 questions it asks
+
+# Now prepare the terraform config files.
+$ vi DevOpsServers.tf
+
+# Type the below code into DevOpsServers.tf
+
+provider "aws" {
+  region = var.region
+}
+
+resource "aws_key_pair" "mykeypair" {
+  key_name   = var.key_name
+  public_key = file(var.public_key)
+}
+
+# to create 2 EC2 instances
+resource "aws_instance" "my-machine" {
+  # Launch 2 servers
+  for_each = toset(var.my-servers)
+
+  ami                    = var.ami_id
+  key_name               = var.key_name
+  vpc_security_group_ids = [var.sg_id]
+  instance_type          = var.ins_type
+
+  # Read from the list my-servers to name each server
+  tags = {
+    Name = each.key
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      echo [${each.key}] >> /etc/ansible/hosts
+      echo ${self.public_ip} >> /etc/ansible/hosts
+    EOT
+  }
+}
+
+
+
+# Now, create the variables file with all variables to be used in the main config file.
+
+vi variables.tf
+
+# Add following contents into variables.tf. Please update the keyname and sg_id below.
+
+variable "region" {
+    # default = "ap-south-1"
+    default = "us-east-1"
+}
+
+# Change the SG ID. You can use the same SG id used for your CICD anchor server
+# Basically the SG should open ports 22, 80, 8080 and 4243
+variable  "sg_id" {
+    default = "sg-06dc8863d3ed3d280" # us-east-1
+    #default = "sg-0901fbb5c3b6d975d" # ap-south-1
+}
+
+# Choose a free tier Ubuntu AMI. You can use below. 
+variable "ami_id" {
+    # default = "ami-0851b76e8b1bce90b" # ap-south-1; Ubuntu
+    default = "ami-04505e74c0741db8d" # us-east-1; Ubuntu
+}
+
+# We are only using t2.micro for this lab
+variable "ins_type" {
+    default = "t2.micro"
+}
+
+# Replace 'yourname' with your first name
+variable key_name {
+    default = "yourname-CICDlab-key-pair"
+}
+
+variable public_key {
+    default = "/home/ubuntu/.ssh/id_rsa.pub"   #Ubuntu OS
+    #default = "/home/ec2-user/.ssh/id_rsa.pub" #RHEL or Amazon Linux
+}
+
+variable "my-servers" {
+  type    = list(string)
+  default = ["jenkins-server", "docker-server"]
+}
+
+# Edit the security group id and keyname in variables.tf
+
+# Now, execute the terraform config files to launch the servers
+
+$ terraform init
+$ terraform fmt
+$ terraform validate
+$ terraform plan
+$ terraform apply -auto-approve
+
+# After the terraform code is executed, check hosts inventory file and ensure below output (sample)
+$ sudo vi /etc/ansible/hosts
+It will show ip addresses of jenkins server and docker server as below.
+
+[jenkins-server]
+54.173.143.232
+[docker-server]
+54.204.115.132
+
+# Now ssh into docker-server & jenkins-server and check they are accessible
+ssh ubuntu@<Jenkins ip address>  
+# also set the hostname
+sudo hostnamectl set-hostname Jenkins
+
+ssh ubuntu@<Docker ip address>  
+sudo hostnamectl set-hostname Docker
+
+
+Task 4: Use Ansible to deploy respective packages into each of the 3 servers 
+============================================================================
+cd ~
+mkdir ansible && cd ansible
+
+# Download the playbook which will deploy packages into the servers.
+wget https://devopstrng.s3.amazonaws.com/DevOpsSetup.yml
+
+# You can inspect the playbook using vi 
+vi DevOpsSetup.yml
+
+# Now, run the above playbook to deploy the packages
+$ ansible-playbook DevOpsSetup.yml
+
+# At the end of this step, the git-ws, docker-server and jenkins-server will be ready for the 
+# Devops labs
+
+# Check if Jenkins landing page is appearing: 
+http://54.173.143.232:8080/ # Use your respective ip address
+
+# Check if docker is working
+http://54.204.115.132:4243/version # Use your respective ip address
+
+
+
+#####################
+Lab 2: Git operations
+#####################
+
+Crteate the github repository based on the method shown in the course document
+(page 91). Create an empty repository in your github account. Name = hello-world
+
+After that, lets operate in local Git repository
+
+
+Initializing the local git repository and committing changes
+============================================================
+# On the CICD anchor EC2, do the below:
+cd ~/
+# Check GIT version. 
+git --version
+# If git does not exist, then you can install git with below command. Else no need to execute below line
+sudo apt install git -y
+
+# download the Java code we are going to use in the CICD pipeline
+wget files.cloudthat.training/devops/devops-essentials/hello-world-master.zip
+unzip hello-world-master.zip -d hello-world-master
+ls
+rm hello-world-master.zip
+cd hello-world-master
+ls
+git init .
+
+# Check the email and user name configured.
+git config user.email
+git config user.name
+
+# If you need to change it, you can use below:
+git config --global user.email "< Replace your email >"
+git config --global user.name "< Replace your Name >"
+
+git status
+git add .
+git status
+
+git log
+git commit -m "This is the first commit"
+git log
+git status
+
+git remote add origin < Replace your Repository URL > 
+# Ex: git remote add origin https://github.com/unuste3/hello-world.git
+
+git remote show origin
+
+# Other useful git commands
+# git remote remove origin (To remove the link to the github)
+
+
+Task 3:Pushing the Code into your Remote GitHub Repository  
+==========================================================
+# To push code to Github, You need to generate a Personal Access Token (PAT) in github.
+# Go to your Github homepage. Click on settings in right side top menu. Click on Developer settings on 
+# left side menu bottom. Click on Personal Access Token on left side menu. Click on Generate New Token
+# Under 'Select Scopes' select all items. Click on 'generate token'. Copy the token
+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
+
+git push origin master 
+# when it asks for password, enter the PAT Token
+Token: <enter your PAT> 
+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
+# When you enter the token, the cursor does not move. Its the expected behavior
+ 
+
+Task 4: Creating a Git Branch and Pushing into the Remote Repository  
+====================================================================
+git branch dev
+git branch
+git checkout dev
+git branch
+
+vi index.html
+
+# Press INSERT and add the below content
+
+<html>
+<body>
+<h1> Hi There !! </h1>
+</body>
+</html>
+
+# Save vi using ESCAPE + :wq!
+
+git status
+git add index.html
+git status
+git commit -m "this is new branch dev"
+git log
+git push origin dev
+when it asks for password, enter PAT Token
+Token: <your PAT>
+
+git branch
+git branch prod
+git branch
+git checkout prod
+git branch
+git merge dev
+git push origin prod
+
+Token: <PAT>
+
+git checkout master
+git merge prod
+git push origin master
+
+
+
+##################################################################################
+After this, you have to complete Jenkins setup and Docker setup. You may want to 
+follow the document from this point onwards because it gives screenshots
+##################################################################################
+
+###############################
+Lab 3: Configure Jenkins
+###############################
+
+# SSH into the Jenkins server and get the initial password for Jenkins
+ssh ubuntu@54.173.143.232
+sudo cat /var/lib/jenkins/secrets/initialAdminPassword
+74adda8c8e474bc08b60923ffdf5e147
+
+# Now, go to the browser and enter Jenkins URL
+http://54.173.143.232:8080/
+
+# Under Unlock Jenkins, enter the above Initial password. Continue.
+Click on Install suggested Plugins on Customize Jenkins page.
+
+# Once the plugins are installed, it gives you the page where you can create new admin user id 
+# and password. 
+
+Enter user id and password. Save & Continue. 
+# To keep things easier for this training, you may use the same user
+# id and password which you used for Github. Needless to say, in real life, you must keep the user 
+# ids and passwords separate.
+
+In next step, on Instance Configuration Page, verify your Jenkins Public IP and Port Number then 
+click on Save and Finish
+
+# You will be prompted to the Jenkins Home Page
+
+Click on Manage Jenkins > Manage Plugins
+
+Under Manage Plugins, go to the Available tab and search for â€˜Mavenâ€™. Select the Maven Integration 
+Plugin and Unleash Maven Plugin and click Install without restart
+
+Once the installation is completed, click on Go back to the top page
+
+After going back to the Home Page select Manage Jenkins and go to Global Tool Configuration
+
+Inside Global Tool Configuration, look for Maven, and under Maven installations, click Add Maven. 
+Give the Name as Maven, choose Version as 3.8.4 and Save the configuration
+
+Now you need to make a project for your application build, for that select New Item from the 
+Home Page of Jenkins
+
+Enter an item name as hello-world and select the project as Maven Project and then click OK
+
+After you click on OK, you will be prompted to the configure page inside hello-world project. 
+Go to Source Code Management tab, select Source Code Management as Git You need to provide the 
+GitHub Repository URL and GitHub Account Credentials. In the Credentials field, you have to 
+click Add then click on Jenkins.
+
+Then you will get prompted to Jenkins Credentials Provider page of Jenkins. Under Add Credentials, 
+you can add your GitHub Username, Password and Description. Then click on Add
+
+After returning to the Source Code Management Page, click on Credentials and Choose your 
+GitHub Credentials.
+
+Keep all the other values as default and select Build Tab and inside Goals and options put a 
+line as a clean package and save the configuration by clicking on Save.
+
+# 'Clean Package' command clears the target directory and Builds the project and packages the 
+# resulting JAR file into the target directory.
+
+You will get back to Maven project hello-world click on Build Now for building the .war file 
+for your application
+
+# You can go to Workspace > dist folder to see that the .war file is created there.
+# war file will be created in /var/lib/jenkins/workspace/hello-world/target/
+
+
+Task 2: Installing and Configuring Tomcat for Deploying our Application on Jenkins server
+=========================================================================================
+
+# SSH into Jenkins server. Make sure that you are root user and Install Tomcat web server
+ssh ubuntu@3.87.66.176 # If you are already in Jenkins, this step not needed
+
+sudo apt update
+
+sudo apt install tomcat9 tomcat9-admin -y
+ss -ltn
+
+sudo systemctl enable tomcat9
+
+# Now we need to navigate to server.xml to change the Tomcat port number from 8080 to 9999, 
+# as port number 8080 is already being used by Jenkins website.
+sudo vi /etc/tomcat9/server.xml
+#Change 8080 to 9999 in 2 or 3 places
+
+#Now restart the system for the changes to take effect
+sudo service tomcat9 restart
+sudo service tomcat9 status
+
+# Once the Tomcat service restart is successful, go to your web browser and enter Jenkins
+# Server IP address followed by 9999 port, you can check the Tomcat running on port 9999 
+# on the same machine. http://< Your Jenkins Public IP >:9999
+
+# We need to copy the .war file created in the previous Jenkins build from Jenkins workspace 
+# to tomcat webapps directory to serve the web content
+
+sudo cp -R /var/lib/jenkins/workspace/hello-world/target/hello-world-war-1.0.0.war /var/lib/tomcat9/webapps
+
+# Once this is done, go to your browser and enter Jenkins Server Public IP address followed 
+# by port 9999 and path â€˜hello-world-war-1.0.0â€™ and you can see tomcat is now serving your web page
+# (URL:  http://< Your Jenkins Public IP >:9999/hello-world-war-1.0.0/)
+
+sudo service tomcat9 stop
+
+
+#####################################################################
+Lab 4: Using GitWebHook to build your code automatically using Jenkins
+#####################################################################
+
+Task 1:Configure Git WebHook in Jenkins
+=======================================
+Go to Jenkins webpage. Manage Jenkins > Manage Plugins
+
+Go to Available Tab, Search for GitHub Integration. Click on the GitHub Integration Plugin 
+and then on Install without restart
+
+Once the installation is completed, click on Go back to the top pag
+
+In your hello-world project, Click on Configure. Go to Build Triggers and enable GitHub hook 
+trigger for GITScm polling. Then Save
+
+Go to your GitHub website, and inside hello-world repository under Settings Tab, then Webhooks. 
+Click on the Add webhook
+
+Fill the details as below.
+Payload URL : http://<<jenkins-publicIP>>/github-webhook/
+Content type: application/json
+Click Add webhook
+
+
+Task 2: Verify the working of WebHook by editing the Source Code
+================================================================
+Now change your source code in the hello-world repository by editimng hello.txt file.
+Make a minor change and commit
+
+As the source code got changed, Jenkins will get triggered by the WebHook and will start building the 
+new source code. Go to Jenkins and you can see a build is happening.
+
+Observe successful load build in Jenkins page.
+
+
+
+###############################################################################################
+Lab 5: Add Docker Machine as Jenkins Slave, build and deploy code in Docker Host as a container
+###############################################################################################
+
+Go to Jenkins' home page and click on the Manage Jenkins option on the left. 
+Click on Manage Nodes and Clouds option
+
+Click on the option New Node in the next window. Give the node name as â€˜docker-slaveâ€™ and then 
+click on the â€˜okâ€™ button. Select 'permanent agent'
+
+Fill out the details for the node â€˜docker-slaveâ€™ as given below. The name should be given as 
+â€˜docker-slaveâ€™, Remote Root Directory as â€˜/home/ubuntu/â€™, labels to be â€˜docker-slaveâ€™, usage to 
+be given as â€˜use this node as much as possibleâ€™ and launch method to be set as â€˜Launch agents 
+via SSHâ€™. In the host section, give the public IP of the Docker instance.
+
+
+For Credentials for this Docker node, click on the dropdown button named Add and then click on 
+Jenkins; then in the next window, select kind as â€˜SSH username and private keyâ€™ give username 
+â€˜ubuntuâ€™, select Enter directly proceed to a private key value below. Click on the Add button 
+once it is done.
+
+You can get the private key as below: Goto your CICD anchor EC2 machine.  
+cd ~/.ssh
+cat id_rsa
+Copy the entire content including first line and last line. Paste it into the space provided for 
+private key
+
+In SSH Credentials, choose newly created ubuntu. Host Key Verification Strategy select Known 
+host file Verification Strategy. 
+
+SSH into your Docker Host. Perform the below steps to create a Dockerfile 
+in /home/ubuntu directory.
+
+cd ~
+vi Dockerfile
+
+# enter the below:
+
+# Pull Base Image
+FROM tomcat:8-jre8
+
+# Maintainer
+MAINTAINER "CloudThat"
+
+# Copy the war file to images tomcat path
+ADD hello-world-war-1.0.0.war /usr/local/tomcat/webapps/
+
+
+Go to your Jenkins Home page, click on drop-down hello-world project, select Configure on the left 
+tab. In General Tab, check â€˜Restrict where this project can be runâ€™ and enter Label Expression as 
+docker-slave
+
+
+Go to Post Steps Tab, select Run only if the build succeeds then click on Add post-build step select 
+Execute shell from the drop-down and type the following commands in the shell and Save
+
+# execute shell commands in Jenkins:
+
+cd ~
+cp -f /home/ubuntu/workspace/hello-world/target/hello-world-war-1.0.0.war .
+sudo docker container rm -f myname-helloworld-container
+sudo docker build -t helloworld-image .
+sudo docker run -d -p 8080:8080 --name myname-helloworld-container helloworld-image
+
+# Note - you may replace 'myname' with your actual first name (line 3 and 5).
+
+
+Now you can build your hello-world project by clicking on Build Now or by making a small change in
+Github files. 
+
+Once the loadbuild is successful, to access the tomcat server page, you can use below:
+
+# Use http:// < Your Docker Host Public IP >:8080/hello-world-war-1.0.0/ in your browser to see the website
+http://<docker ip address>:8080/hello-world-war-1.0.0/
+http://54.204.115.132:8080/hello-world-war-1.0.0/
+
+
+Clean up the Instances
+=======================
+We can now terminate all the 4 instances. We will use a bigger instance for Lab 6.
+
+
+
+###############################################################################
+Lab 6: Configuring and running Jenkins with SonarQube and Artifactory on Docker
+###############################################################################
+
+
+Task 1: Launch New EC2 (t3.xlarge) or do vertical scaling of existing docker instance
+=====================================================================================
+# Launch a new t3.xlarge EC2 with Ubuntu20.04 AMI in us-east-1. Ensure that you add an inbound
+# rule in your security group to open port range 1-50000.
+# Custom TCP(Type)   TCP(Protocol)   1 - 50000(port range)     0.0.0.0/0 (source)
+# We need to open ports 8081, 8082, 9000, 9001 and 50,000. If you add the above range it will
+# cover everything. Add tag as 'CICDLab-yourname'
+
+# Once the EC2 is up and running, SSH into the machine
+sudo hostnamectl set-hostname CICDLabs
+
+
+Task 2: Install docker containers for Jenkins, SonarQube and Jfrog
+===================================================================
+
+Install Docker
+--------------
+(You can Refer page: https://docs.docker.com/engine/install/ubuntu/)
+
+# Update the package management tool/repo
+sudo apt-get update
+
+# Install the below software packages which are needed for Docker
+# Most of them would be already installed 
+sudo apt-get install ca-certificates curl gnupg lsb-release
+
+# get the GPG key
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+# Add the docker package location to the package management repo config 
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] \
+https://download.docker.com/linux/ubuntu \
+$(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Update the pkg management tool again so that it will download docker package.
+sudo apt-get update
+
+# Install docker
+sudo apt-get install docker-ce docker-ce-cli containerd.io -y
+
+docker --version
+
+
+Task 2.1: Jenkins container
+---------------------------
+# create a Docker container named jenkins by using the given docker run command. 
+# Use jenkins/jenkins image for creating the container
+
+sudo docker run -d --name jenkins -p 8080:8080 -p 50000:50000 jenkins/jenkins:latest
+
+# check if docker is up and running
+sudo docker ps
+
+# Login to the docker and get the initial password for Jenkins
+# Open interactive bash shell.
+sudo docker exec -it 5b3597fc0899 bash 
+cat /var/jenkins_home/secrets/initialAdminPassword
+7ce4ea93284043c6a881ffec2fae7b7c
+
+# get the ip address of the EC2 from the console or you can do below from within EC2
+curl ifconfig.me
+
+# Access the Jenkins page using the EC2 ip address and port 8080
+http://3.80.117.173:8080/
+
+# Paste the initialAdminPassword copied during Task 2 - Step 2 in the Administrator password 
+# field of the Unlock Jenkins web page. Then click on Continue
+
+# In Customize Jenkins Page, choose â€œInstall suggested plugins"
+# After that, create user id & password.
+ 
+# Move to installing SonarQube
+
+# Below are some useful docker commands
+# sudo docker stop 1e6e233c0178
+# sudo docker rm 1e6e233c0178
+# sudo docker ps
+# sudo docker logs <container_id>
+# docker container ls -a
+# docker container start bc1b276e12cb
+# sudo docker exec -it 5b3597fc0899 bash
+
+
+Sonarqube installation
+----------------------
+# exit from the docker container if you are logged in.
+exit
+
+# Use the following docker run command to create a container named sonarqube
+sudo docker run -d --name sonarqube -p 9000:9000 -p 9092:9092 sonarqube:latest
+
+# Verify the SonarQube website availability in a web browser using http://<Docker Host Public IP>:9000
+http://3.80.117.173:9000/
+
+# Use user id: admin; password: admin
+# change password after first login
+
+# Now move to Jfrog artifactory installation
+
+
+JFrog Artifactory Installation
+------------------------------
+
+# Launch a container with Jfrog artifactory image
+sudo docker run --name artifactory -d -p 8081:8081 docker.bintray.io/jfrog/artifactory-oss:6.5.9
+
+# check if the container is running
+sudo docker ps
+
+Verify the working of the Artifactory website in your web browser using http://< Docker Host Public IP >:8081
+http://3.80.117.173:8081/
+
+
+
+Task 3 Configuring Jenkins and integrating with SonarQube Scanner plugin
+========================================================================
+# Note : You could follow the document from this point onwards, which gives the screenshots.
+
+# Go to Manage Jenkins >> Manage Plugins >> Available.
+# Search for â€œSonarQube Scannerâ€, select the plugin and click on â€œInstall without restartâ€
+
+# Go to Sonarqube webpage and generate a token which will be used as password to login from Jenkins
+# Open SQ in browser 
+http://3.80.117.173:9000/
+Click on 'Administration' at the top menu
+Click on 'Users' under the 'Security' menu item
+Click on Tokens; It will pop up a small window where you have to specify the token name.
+Click 'Generate'. Copy the token generated. Then click 'done'
+9dba1ccd26f5dc381e117fc505398ae91291378a
+
+# Now go back to Jenkins to complete the integration with SQ
+
+# From Jenkins Dashboard go to Manage Jenkins >> Configure System >> SonarQube servers and click 
+# on 'Add SonarQube'. Add server name as 'Sonar' and add the 'Server URL' as http://3.80.117.173:9000/
+
+# Click on Server Authentication Token > Jenkins
+# In the pop up window choose 'secret text' against kind
+
+# Add authorization token against secret
+SQ Token: 9dba1ccd26f5dc381e117fc505398ae91291378a
+Description: Sonar Token
+
+Click on Save
+
+From Jenkins Dashboard, go to Manage Jenkins >> Global Tool Configuration >> SonarQube Scanner and 
+click on Add SonarQube Scanner. 
+Provide Name â€œsonarqubeâ€ and check â€œInstall automaticallyâ€. Select SonarQube Scanner 3.2.0.1227 in version
+
+Under Maven, click on Add Maven. Provide name as Maven, click on Install Automatically and select 
+version â€œ3.8.4â€ and click Save
+
+Save
+
+From Manage Jenkins dashboard go to Manage Credentials, and select global under â€œStores scoped to Jenkinsâ€
+
+Click Add Credentials and provide your GitHub Username and Password and Description, click on OK
+
+
+
+Task 4: Creating and configuring Jenkins Freestyle project for SonarQube scanner
+================================================================================
+
+From Jenkins Dashboard, go to New Item. Enter an item name â€œSonarProjectâ€. Select â€œFreestyle Projectâ€ and 
+click OK
+
+On next screen under â€œSource Code Managementâ€ select â€œGitâ€, provide your hello-world repository URL 
+which contains Java project for Maven build, select your Git credentials you have configured in the previous 
+step from the Credentials dropdown
+
+Ex: https://github.com/unuste3/hello-world.git (Github repository URL)
+
+
+# Below step not required in latest version
+# Under â€œBuild Environmentâ€ Tab, check â€œPrepare SonarQube Scanner environment"
+
+# Under Build >> Add build step select â€œExecute SonarQube Scannerâ€ and populate the fields with values as 
+# provided below:
+Task to run: scan
+JDK: Inherit from Job
+#Analysis properties:
+sonar.projectKey=sonarproject
+sonar.sources=src
+# Click Save. 
+
+# Click on the project created. Click on Build Now
+# Build should succeed and also SonarQube Quality Gate should show status as 'passed'.
+sonarproject  Passed  ; server-side processing: success
+
+# Login to the sonarqube page; Click on 'Projects' and check the status
+# Click on the project name to get detailed report.
+
+
+
+Task 5: Configuring Jenkins and integrating with Artifactory plugin
+===================================================================
+
+# Go to artifactory URL and login using user id : admin and password : password
+# Without this step, the Jenkins config may fail
+
+# Go to Manage Jenkins >> Manage Plugins >> Available search for â€œArtifactoryâ€, select the plugin and click 
+# on â€œInstall without restartâ€ 
+
+# It is not mandatory to restart Jenkins after Artifactory installation. However, if you want to restart 
+# Jenkins, you can check â€œRestart Jenkins when the installation is complete, and no jobs are runningâ€ 
+# after installation is complete.
+
+# From Jenkins Dashboard, go to Manage Jenkins >> Configure System >> Jfrog Artifactory and click on 
+# Add Jfrog Platform Instance
+
+JFrog Platform URL: http://3.80.117.173:8081/artifactory
+
+# Provide Server ID as artifactory, URL as http://<Docker Host Public IP>:8082/artifactory in â€œDefault Deployer
+# Credentialsâ€ provide Username as â€œadminâ€ and password as â€œpasswordâ€.
+# Click on 'Advanced Configuration. Enter 'http://54.196.3.248:8081/artifactory/' in JFrog Artifactory URL.
+# Now, click on Test connection. Once the configuration is valid, you will get a notification as below
+
+Found JFrog Artifactory 6.5.9 at http://54.196.3.248:8081/artifactory/
+JFrog Distribution not found at http://54.196.3.248:8081/
+
+# You can ignore line 2 above
+
+# Click Apply and then Save
+
+# Ensure that Maven is still installed (was done in the previous task)
+# From Jenkins Dashboard go to Manage Jenkins >> Global Tool Configuration >> click Maven Installations
+
+
+Task 6: Creating a new Maven Project in Jenkins and configuring it for artifactory
+==================================================================================
+
+# From Jenkins Dashboard, go to New Item. Enter an item name â€œArtifactoryTestâ€, select â€œMaven Projectâ€ and 
+# click on OK
+
+# On the next screen under the â€œSource Code Managementâ€ tab, select â€œGitâ€, paste your hello-world GitHub 
+# repository URL, select your Git credentials you have configured in the previous task.
+
+# Under Post Steps Tab, click on Add Post-build Actions and select â€œDeploy artifacts to Artifactoryâ€ from 
+# the drop-down menu
+# Click on Refresh repositories
+# Use example-repo-local for both
+
+Save
+
+# Go back to Jenkins main page
+
+Build Now
+
+# Once your build is successful, you can go to http://<Docker Host Public IP>:8081/artifactory from your 
+# web browser and check in Artifactory Dashboard for your ArtifactoryTest project artifacts
+
+
+
+Task 7: Combining SonarQube and Artifactory plugins in a single Jenkins Maven Project
+=====================================================================================
+
+# From Jenkins Dashboard go to ArtifactoryTest project
+# Go to â€œConfigureâ€ option of ArtifactoryTest
+# Go to â€œPost Stepsâ€ Tab, click â€œAdd Post Build Stepâ€
+# Run only if Build Succeeds
+
+Choose Execute SonarQubeScanner
+
+Task to run: scan
+JDK: Inherit from Job
+# Analysis properties:
+sonar.projectKey= sonarproject2
+sonar.sources =src
+# Click Apply and Save. 
+
+Now build the load again by clicking Build Now
+
+# Login to SonarQube URL and observe that the new analysis result is available
+# Login to artifact server and observe that new artifact is saved in the tool
+
+
+Task 8: Clean up the AWS resources used for the lab
+====================================================
+
+Terminate all the EC2s and other resources used for this lab.
+
+
+
+#####################
+Other Useful commands
+#####################
+
+How to Restart Jenkins
+======================
+Type below on the browser:
+<Jenkins URL>/restrat   # sort of forced restart
+or 
+<Jenkins URL>/saferestart # This will close the running processes and restart
+
+# How to remove a docker engine if there are any existing ones (before you start new one) 
+$ sudo apt-get remove docker docker-engine docker.io containerd runc
